@@ -35,7 +35,11 @@ def traj_to_timestamped_geojson(trajectory):
             ],
             [row["geometry"].xy[0][0], row["geometry"].xy[1][0]],
         ]
-        times = [row["previous_time"].isoformat(), row["time"].isoformat()]
+        # Format without microseconds to ensure JS time parser compatibility
+        times = [
+            row["previous_time"].strftime("%Y-%m-%dT%H:%M:%S"),
+            row["time"].strftime("%Y-%m-%dT%H:%M:%S"),
+        ]
         features.append(
             {
                 "type": "Feature",
@@ -46,7 +50,7 @@ def traj_to_timestamped_geojson(trajectory):
                 "properties": {
                     "times": times,
                     "style": {
-                        "color": row["colour"],
+                        "color": row.get("colour", "red"),
                         "weight": 5,
                     },
                 },
@@ -129,14 +133,24 @@ def draw_map(traj):
     features = traj_to_timestamped_geojson(traj)
     # Create base map
     London = [51.506949, -0.122876]
-    map = folium.Map(location=London, zoom_start=12, tiles="cartodbpositron")
+    map = folium.Map(location=London, zoom_start=12, tiles="CartoDB positron")
     TimestampedGeoJson(
         {
             "type": "FeatureCollection",
             "features": features,
         },
         period="PT1S",
-        add_last_point=False,
+        add_last_point=True,
         transition_time=10,
+        date_options="YYYY-MM-DDTHH:mm:ss[Z]",
+        auto_play=True,
+        time_slider_drag_update=True,
     ).add_to(map)
+    # Fit view to trajectory bounds for visibility
+    try:
+        lons = [p.xy[0][0] for p in traj.df["geometry"]]
+        lats = [p.xy[1][0] for p in traj.df["geometry"]]
+        map.fit_bounds([[min(lats), min(lons)], [max(lats), max(lons)]])
+    except Exception:
+        pass
     return map

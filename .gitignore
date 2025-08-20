@@ -135,3 +135,4 @@ data/bike_stations_dump.json
 data/cycle_street_key.txt
 .vscode/launch.json
 output/old_routes/*.json
+.DS_Store

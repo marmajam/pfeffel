@@ -5,6 +5,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+INCORRECT_STATION_IDS = [
+    "Tabletop1",
+    "200217old2"
+]
+
 # Columns of the CSV files that we need, and some data relate to them.
 COLUMNS = [
     "Rental Id",
@@ -18,12 +23,16 @@ COLUMNS = [
     "StartStation Name",
 ]
 COLUMNS_ALTERNATIVE_NAMES = {
-    "Duration": ("Duration_Seconds",),
-    "EndStation Id": ("End Station Id",),
-    "EndStation Name": ("End Station Name",),
-    "StartStation Id": ("Start Station Id",),
-    "StartStation Name": ("Start Station Id",),
+    "Rental Id": ("Number",),
+    "Duration": ("Duration_Seconds","Total duration (ms)"),
+    "EndStation Id": ("End Station Id", "End station number"),
+    "EndStation Name": ("End Station Name", "End station"),
+    "StartStation Id": ("Start Station Id", "Start station number"),
+    "StartStation Name": ("Start Station Name", "Start station"),
+    "End Date": ("End date",),
+    "Start Date": ("Start date",),
 }
+
 COLUMN_RENAMES = {
     "Rental Id": "rental_id",
     "Duration": "duration",
@@ -40,10 +49,10 @@ COLUMN_DTYPES = {
     "Duration": np.float_,
     "Bike Id": np.float_,
     "End Date": str,
-    "EndStation Id": np.float_,
+    "EndStation Id": str,
     "EndStation Name": str,
     "Start Date": str,
-    "StartStation Id": np.float_,
+    "StartStation Id": str,
     "StartStation Name": str,
 }
 
@@ -154,6 +163,49 @@ MISIDED_STATIONS = [
 MISIDED_STATIONS_FLAT = sum(MISIDED_STATIONS, [])
 
 
+def _normalize_station_id_value(value):
+    """Return the station id with any dash-suffix removed, e.g. '300006-1' -> '300006'.
+    
+    Also removes everything after the first non-numeric character.
+    Leaves non-string values unchanged and preserves NaNs.
+    """
+    if pd.isna(value):
+        return value
+    
+    if isinstance(value, str):
+        # Remove dash-suffixes like '300006-1' -> '300006'
+        if "-" in value:
+            value = str(value.split("-", 1)[0].strip())
+        
+        # Keep only the numeric part at the beginning
+        import re
+        value = re.match(r'^\d+', value)
+        if value:
+            value = value.group(0)
+        else:
+            return np.nan
+        
+        # Check if the cleaned value is numeric
+        try:
+            float(value)
+            return value
+        except ValueError:
+            return np.nan
+    
+    return value
+
+
+def normalize_station_id_columns(df):
+    """Normalize station id columns in-place by stripping any dash-suffixes.
+
+    Applies to both 'StartStation Id' and 'EndStation Id' if present.
+    """
+    for column_name in ("StartStation Id", "EndStation Id"):
+        if column_name in df.columns:
+            df[column_name] = df[column_name].apply(_normalize_station_id_value)
+    return df
+
+
 def add_station_names(station_names, df, namecolumn, idcolumn):
     """Given a DataFrame df that has df[namecolumn] listing names of stations
     and df[idcolumn] listing station ID numbers, add to the dictionary
@@ -171,7 +223,12 @@ def add_station_names(station_names, df, namecolumn, idcolumn):
         # array of values, but since the single value is a string, it too is an
         # iterable.
         vals = names[0]
-        new_names = set([vals]) if type(vals) == str else set(vals)
+        # Filter out NaN values to prevent mixed type issues
+        if type(vals) == str:
+            new_names = set([vals]) if pd.notna(vals) else set()
+        else:
+            # vals is an array/iterable, filter out NaN values
+            new_names = set([name for name in vals if pd.notna(name)])
         current_names.update(new_names)
         station_names[number] = current_names
 
@@ -181,12 +238,29 @@ def clean_datetime_column(df, colname, roundto="min"):
     to the nearest minute. df is partially modified in place, but the return
     value should still be used.
     """
-    # A bit of a hacky way to use the first entry to figure out which date
-    # format this file uses. Not super robust, but works for our purposes.
-    if len(df[colname].iloc[0]) > 16:
+
+    slash_count = len(df[colname].iloc[0].split("/"))
+    hyphen_count = len(df[colname].iloc[0].split("-"))
+    colon_count = len(df[colname].iloc[0].split(":"))
+
+    if slash_count == 3 and colon_count == 3:
         format = "%d/%m/%Y %H:%M:%S"
-    else:
+
+    elif hyphen_count == 3 and colon_count == 3:
+        format = "%Y-%m-%d %H:%M:%S"
+
+    elif slash_count == 3 and colon_count == 2:
         format = "%d/%m/%Y %H:%M"
+
+    elif hyphen_count == 3 and colon_count == 2:
+        format = "%Y-%m-%d %H:%M"
+
+    elif hyphen_count == 3:
+        format = "%Y-%m-%d"
+
+    else:
+        format = "%Y-%m-%d %H:%M:%S"
+
     df[colname] = pd.to_datetime(df[colname], format=format)
     df[colname] = df[colname].dt.round(roundto)
     return df
@@ -240,6 +314,8 @@ def load_clean_data(bikefolder="./bikes", num_files=None, datapaths=None):
             # with them later.
             problem_paths.append(path)
             continue
+        # Normalize station IDs like '300006-1' -> '300006' if present
+        df = normalize_station_id_columns(df)
         # Drop all rows where all values are missing. There literally are lines
         # in the CSV files that specify such empty rows.
         df = df[~df.isna().all(axis=1)]
@@ -269,6 +345,9 @@ def load_clean_data(bikefolder="./bikes", num_files=None, datapaths=None):
         v_filtered = [name for name in v if name not in MISIDED_STATIONS_FLAT]
         if v_filtered:
             v = v_filtered
+        # Skip stations that have no valid names after filtering
+        if not v:
+            continue
         v = sorted(v)
         station_names[k] = v[0]
         for name in v:
@@ -309,7 +388,17 @@ def load_clean_data(bikefolder="./bikes", num_files=None, datapaths=None):
             ):
                 for alternative_name in COLUMNS_ALTERNATIVE_NAMES[column_name]:
                     if alternative_name in df.columns:
-                        df[column_name] = df[alternative_name]
+                        if alternative_name == "Total duration (ms)":
+                            df[column_name] = df[alternative_name] / 1000
+                        else:
+                            df[column_name] = df[alternative_name]
+        
+        for column_name in COLUMNS:
+            if column_name in df.columns and column_name in COLUMN_DTYPES:
+                df[column_name] = df[column_name].astype(COLUMN_DTYPES[column_name])
+        
+        # Normalize station IDs like '300006-1' -> '300006' if present
+        df = normalize_station_id_columns(df)
         # Remove all the columns that we didn't expect.
         for column_name in df.columns:
             if column_name not in COLUMNS + ["filename"]:
@@ -340,7 +429,7 @@ def load_clean_data(bikefolder="./bikes", num_files=None, datapaths=None):
     )
 
     # Drop one anomalous ID
-    df = df[df["StartStation Id"] != "Tabletop1"]
+    df = df[~df["StartStation Id"].isin(INCORRECT_STATION_IDS)]
     df["StartStation Id"] = df["StartStation Id"].astype(np.float_)
 
     # There are stations that have been given the same ID as another, clearly

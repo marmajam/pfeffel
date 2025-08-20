@@ -1,5 +1,6 @@
 import json
 import pickle
+import os
 import re
 
 import community
@@ -11,6 +12,7 @@ import pandas as pd
 from matplotlib import pyplot as plt
 
 STATION_NAMES_FILE = "../data/station_names_20220615_1137.pickle"
+STATION_NAMES_LATEST = "../data/station_names_latest.pickle"
 STATION_COORDS_FILE = "../data/stations_loc.json"
 
 TRIP_COUNT_THRESHOLD = 1e-5
@@ -37,7 +39,10 @@ LABEL_STATIONS = [
 
 
 def get_station_name(id):
-    with open(STATION_NAMES_FILE, "rb") as f:
+    station_names_path = STATION_NAMES_FILE
+    if os.path.exists(STATION_NAMES_LATEST):
+        station_names_path = STATION_NAMES_LATEST
+    with open(station_names_path, "rb") as f:
         station_allnames = pickle.load(f)
 
     name = sorted(station_allnames[id])[0]
